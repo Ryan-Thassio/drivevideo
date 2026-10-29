@@ -25,6 +25,8 @@ import androidx.media3.common.MimeTypes
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.DefaultRenderersFactory
+import androidx.media3.exoplayer.mediacodec.MediaCodecSelector
+import androidx.media3.exoplayer.mediacodec.MediaCodecUtil
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
@@ -68,6 +70,12 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         WindowCompat.setDecorFitsSystemWindows(window, true)
         setContent { MaterialTheme(colorScheme = darkColorScheme()) { Surface(Modifier.fillMaxSize()) { App() } } }
+    }
+
+    // Prefere decodificadores por software (c2.android.* / OMX.google.*); o hardware fica como reserva
+    private val softwareFirst = MediaCodecSelector { mime, secure, tunneling ->
+        MediaCodecUtil.getDecoderInfos(mime, secure, tunneling)
+            .sortedBy { !(it.name.startsWith("c2.android.") || it.name.startsWith("OMX.google.")) }
     }
 
     private val tabs = listOf("Meu Drive", "Compartilhados", "Recentes", "Com estrela")
@@ -157,7 +165,9 @@ class MainActivity : ComponentActivity() {
         var err by remember { mutableStateOf<String?>(null) }
         val player = remember {
             val ds = DefaultHttpDataSource.Factory().setDefaultRequestProperties(mapOf("Authorization" to "Bearer $token"))
-            ExoPlayer.Builder(ctx, DefaultRenderersFactory(ctx).setEnableDecoderFallback(true))
+            ExoPlayer.Builder(ctx, DefaultRenderersFactory(ctx)
+                .setEnableDecoderFallback(true)
+                .setMediaCodecSelector(softwareFirst))
                 .setMediaSourceFactory(DefaultMediaSourceFactory(ds)).build()
         }
         LaunchedEffect(file, subs) {
