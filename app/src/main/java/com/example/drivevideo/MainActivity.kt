@@ -22,6 +22,9 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
+import androidx.media3.common.PlaybackException
+import androidx.media3.common.Player
+import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
@@ -36,6 +39,7 @@ import kotlin.coroutines.resume
 
 class MainActivity : ComponentActivity() {
     private var pending: ((String?) -> Unit)? = null
+    private var authError: String? = null
     private val launcher = registerForActivityResult(StartIntentSenderForResult()) { r ->
         val t = try { Identity.getAuthorizationClient(this).getAuthorizationResultFromIntent(r.data).accessToken } catch (e: Exception) { null }
         pending?.invoke(t); pending = null
@@ -50,7 +54,7 @@ class MainActivity : ComponentActivity() {
                     pending = { cont.resume(it) }
                     launcher.launch(IntentSenderRequest.Builder(res.pendingIntent!!.intentSender).build())
                 } else cont.resume(res.accessToken)
-            }.addOnFailureListener { cont.resume(null) }
+            }.addOnFailureListener { authError = it.message; cont.resume(null) }
     }
 
     private fun fullscreen(on: Boolean) {
@@ -85,7 +89,7 @@ class MainActivity : ComponentActivity() {
         suspend fun load() {
             loading = true; error = null
             try {
-                var t = tok ?: token().also { tok = it } ?: run { error = "Login necessário"; loading = false; return }
+                var t = tok ?: token().also { tok = it } ?: run { error = authError ?: "Login necessário"; loading = false; return }
                 val folder = stack.lastOrNull()?.id
                 val q = when {
                     query.isNotBlank() -> "name contains '${DriveApi.esc(query)}' and mimeType contains 'video/' and trashed=false"
@@ -150,9 +154,11 @@ class MainActivity : ComponentActivity() {
     fun PlayerScreen(file: DriveFile, token: String, subs: List<DriveFile>, onFullscreen: (Boolean) -> Unit, onBack: () -> Unit) {
         val ctx = androidx.compose.ui.platform.LocalContext.current
         var full by remember { mutableStateOf(false) }
+        var err by remember { mutableStateOf<String?>(null) }
         val player = remember {
             val ds = DefaultHttpDataSource.Factory().setDefaultRequestProperties(mapOf("Authorization" to "Bearer $token"))
-            ExoPlayer.Builder(ctx).setMediaSourceFactory(DefaultMediaSourceFactory(ds)).build()
+            ExoPlayer.Builder(ctx, DefaultRenderersFactory(ctx).setEnableDecoderFallback(true))
+                .setMediaSourceFactory(DefaultMediaSourceFactory(ds)).build()
         }
         LaunchedEffect(file, subs) {
             val pos = player.currentPosition
@@ -165,12 +171,22 @@ class MainActivity : ComponentActivity() {
                 .setSubtitleConfigurations(cfg).build(), pos)
             player.prepare(); player.playWhenReady = true
         }
+        DisposableEffect(player) {
+            val l = object : Player.Listener {
+                override fun onPlayerError(e: PlaybackException) {
+                    err = "${e.errorCodeName}: ${e.cause?.message ?: e.message}"
+                }
+            }
+            player.addListener(l)
+            onDispose { player.removeListener(l) }
+        }
         DisposableEffect(Unit) { onDispose { player.release() } }
         BackHandler(onBack = onBack)
         Box(Modifier.fillMaxSize()) {
             // Controles nativos: play/pause, ±seek, barra de progresso, velocidade, legendas, faixa de áudio
             AndroidView({ PlayerView(it).apply { this.player = player; setShowSubtitleButton(true); controllerShowTimeoutMs = 3000 } },
                 Modifier.fillMaxSize())
+            err?.let { Text(it, Modifier.align(Alignment.Center).padding(24.dp)) }
             Row(Modifier.statusBarsPadding().padding(8.dp).align(Alignment.TopCenter).fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 TextButton(onBack) { Text("←") }
                 Text(file.name, Modifier.weight(1f), maxLines = 1)
